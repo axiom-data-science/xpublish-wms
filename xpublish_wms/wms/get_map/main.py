@@ -14,10 +14,12 @@ import pandas as pd
 import xarray as xr
 from fastapi import HTTPException
 from fastapi.responses import Response
+from PIL.Image import Image
 
 from xpublish_wms.grids import RenderMethod
 from xpublish_wms.logger import logger
-from xpublish_wms.query import WMSGetMapQuery
+from xpublish_wms.query import GET_MAP_RASTER_STYLES, GetMapRasterStyles, WMSGetMapQuery
+from xpublish_wms.wms.get_map.arrow_style import visualize_direction
 
 
 class GetMap:
@@ -51,7 +53,7 @@ class GetMap:
     height: int
 
     # Output style
-    style: str
+    style: GetMapRasterStyles
     colorscalerange: Sequence[float] | None
     autoscale: bool
 
@@ -220,10 +222,14 @@ class GetMap:
         Decode request parameters related to render style
         """
         _, raster_style = query.styles
-        # TODO: add more style options
-        self.style = "colormap"
+        # if `raster_style` is not one of the style options, assume it's a colormap name
+        self.style = raster_style if raster_style in GET_MAP_RASTER_STYLES else "colormap"
 
-        self.palettename = raster_style
+        if self.style == "arrow":
+            return
+        # else: self.style is "colormap"
+
+        self.palettename = query.palette or ("default" if raster_style == "colormap" else raster_style)
         # Let user pick cm from here https://predictablynoisy.com/matplotlib/gallery/color/colormap_reference.html#sphx-glr-gallery-color-colormap-reference-py
         # Otherwise default to rainbow
         if self.palettename == "default":
@@ -450,10 +456,9 @@ class GetMap:
         logger.debug(f"WMS GetMap Mesh time: {time.time() - start_mesh}")
 
         start_shade = time.time()
-        shaded = self.shade_mesh(mesh, )
+        im = self.shade_mesh(mesh)
         logger.debug(f"WMS GetMap Shade time: {time.time() - start_shade}")
 
-        im = shaded.to_pil()
         im.save(buffer, format="PNG")
         return True
     
@@ -539,18 +544,19 @@ class GetMap:
 
         raise ValueError(f"Unexpected gridded dataset render method {ds.gridded.render_method}")
     
-    def shade_mesh(self, mesh: xr.Dataset):
-        if self.style == "colormap":
-            span = (
-                None
-                if self.autoscale or self.colorscalerange is None
-                else tuple(self.colorscalerange[0:2])
-            )
-            return tf.shade(
-                mesh,
-                cmap=matplotlib.colormaps.get_cmap(self.palettename),
-                how="linear",
-                span=span,
-            )
-        # TODO other styles
-        raise NotImplementedError(f"{self.style} is not implemented yet")
+    def shade_mesh(self, mesh: xr.Dataset) -> Image:
+        if self.style == "arrow":
+            return visualize_direction(mesh)
+
+        # else -> self.style == "colormap"
+        span = (
+            None
+            if self.autoscale or self.colorscalerange is None
+            else tuple(self.colorscalerange[0:2])
+        )
+        return tf.shade(
+            mesh,
+            cmap=matplotlib.colormaps.get_cmap(self.palettename),
+            how="linear",
+            span=span,
+        ).to_pil()
