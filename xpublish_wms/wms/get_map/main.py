@@ -1,7 +1,8 @@
+from functools import partial
 import io
 import time
 from datetime import datetime
-from typing import List, Sequence, Union
+from typing import Iterable, List, Sequence, Union
 
 import cachey
 import cf_xarray  # noqa
@@ -14,10 +15,13 @@ import pandas as pd
 import xarray as xr
 from fastapi import HTTPException
 from fastapi.responses import Response
+from PIL.Image import Image
 
 from xpublish_wms.grids import RenderMethod
 from xpublish_wms.logger import logger
 from xpublish_wms.query import WMSGetMapQuery
+from xpublish_wms.wms.get_map.style_types import ColormapStyleParams, ShadingStyleParams, VectorStyleParams
+from xpublish_wms.wms.get_map.vector_styles import visualize_vectors
 
 
 class GetMap:
@@ -37,7 +41,7 @@ class GetMap:
     array_render_threshold_bytes: int
 
     # Data selection
-    parameter: str
+    parameters: list[str]
     time: datetime = None
     has_time: bool
     elevation: float = None
@@ -51,9 +55,7 @@ class GetMap:
     height: int
 
     # Output style
-    style: str
-    colorscalerange: Sequence[float] | None
-    autoscale: bool
+    styles: ShadingStyleParams
 
     def __init__(
         self,
@@ -84,7 +86,7 @@ class GetMap:
 
         # Select data according to request
         try:
-            da = self.select_layer(ds)
+            das = self.select_layers(ds)
         except Exception as e:
             logger.error(f"Error selecting layer: {e}")
             raise HTTPException(
@@ -93,7 +95,7 @@ class GetMap:
             )
 
         try:
-            da = self.select_time(da)
+            das = [self.select_time(da) for da in das]
         except Exception as e:
             logger.error(f"Error selecting time: {e}")
             raise HTTPException(
@@ -102,7 +104,7 @@ class GetMap:
             )
 
         try:
-            da = self.select_elevation(ds, da)
+            das = [self.select_elevation(ds, da) for da in das]
         except Exception as e:
             logger.error(f"Error selecting elevation: {e}")
             raise HTTPException(
@@ -111,7 +113,7 @@ class GetMap:
             )
 
         try:
-            da = self.select_custom_dim(da)
+            das = [self.select_custom_dim(da) for da in das]
         except Exception as e:
             logger.error(f"Error selecting custom dimensions: {e}")
             raise HTTPException(
@@ -125,7 +127,7 @@ class GetMap:
         # use the contoured renderer for regular grid datasets
         image_buffer = io.BytesIO()
         try:
-            render_result = self.render(ds, da, image_buffer, False)
+            render_result = self.render(ds, das, image_buffer, False)
         except HTTPException as e:
             raise e
         except Exception as e:
@@ -154,17 +156,22 @@ class GetMap:
         self.ensure_query_types(ds, query, query_params)
 
         # Select data according to request
-        da = self.select_layer(ds)
-        da = self.select_time(da)
-        da = self.select_elevation(ds, da)
-        da = self.select_custom_dim(da)
+        das = self.select_layers(ds)
+        selectors = [
+            self.select_time,
+            partial(self.select_elevation, ds),
+            self.select_custom_dim,
+        ]
+        for selector in selectors:
+            das = [selector(da) for da in das]
 
         # Prepare the data as if we are going to render it, but instead grab the min and max
         # values from the data to represent the range of values in the given area
         if entire_layer:
+            da = das_to_scalar(das)
             return {"min": float(da.min()), "max": float(da.max())}
         else:
-            return self.render(ds, da, None, minmax_only=True)
+            return self.render(ds, das, None, minmax_only=True)
 
     def ensure_query_types(
         self,
@@ -179,21 +186,21 @@ class GetMap:
         :return:
         """
         # Data selection
-        self.parameter = query.layers
+        self.parameters = [layer for layer in query.layers.split(",") if layer]
         self.time_str = query.time
 
         if self.time_str:
             self.time = pd.to_datetime(self.time_str).tz_localize(None)
         else:
             self.time = None
-        self.has_time = self.TIME_CF_NAME in ds[self.parameter].cf.coords
+        self.has_time = all(self.TIME_CF_NAME in ds[parameter].cf.coords for parameter in self.parameters)
 
         self.elevation_str = query.elevation
         if self.elevation_str:
             self.elevation = float(self.elevation_str)
         else:
             self.elevation = None
-        self.has_elevation = self.ELEVATION_CF_NAME in ds[self.parameter].cf.coords
+        self.has_elevation = all(self.ELEVATION_CF_NAME in ds[parameter].cf.coords for parameter in self.parameters)
 
         # Grid
         self.crs = query.crs
@@ -209,7 +216,10 @@ class GetMap:
         # Output style
         self.decode_query_styles(query)
 
-        available_selectors = ds.gridded.additional_coords(ds[self.parameter])
+        available_selectors = list(set.intersection(*(
+            set(ds.gridded.additional_coords(ds[parameter]))
+            for parameter in self.parameters
+        )))
         self.dim_selectors = {
             k: query_params[k] if k in query_params else None
             for k in available_selectors
@@ -219,27 +229,52 @@ class GetMap:
         """
         Decode request parameters related to render style
         """
-        _, raster_style = query.styles
-        # TODO: add more style options
-        self.style = "colormap"
+        source_type, colormap = query.styles
 
-        self.palettename = raster_style
-        # Let user pick cm from here https://predictablynoisy.com/matplotlib/gallery/color/colormap_reference.html#sphx-glr-gallery-color-colormap-reference-py
-        # Otherwise default to rainbow
-        if self.palettename == "default":
-            self.palettename = self.DEFAULT_PALETTE
+        # Let user pick colormap from here https://predictablynoisy.com/matplotlib/gallery/color/colormap_reference.html#sphx-glr-gallery-color-colormap-reference-py
+        # Otherwise default
+        palette_name = (
+            query.palette or (
+                self.DEFAULT_PALETTE
+                if colormap in ["colormap", "default"]
+                else colormap
+            )
+        )
 
-        self.colorscalerange = query.colorscalerange
-        self.autoscale = query.autoscale
+        if source_type == "vector":
+            self.styles = VectorStyleParams(
+                type=source_type,
+                color=query.color,
+                density=query.density or 1,
+                scaling=VectorStyleParams.GlyphScaling(query.vectorscale),
+                colorscale_range=query.colorscalerange,
+                colormap=None if colormap == "none" else palette_name,
+            )
+            return
 
+        # else: `source_mesh` is "raster"
+        self.styles = ColormapStyleParams(
+            type="colormap",
+            palettename=(
+                # Let user pick colormap from here https://predictablynoisy.com/matplotlib/gallery/color/colormap_reference.html#sphx-glr-gallery-color-colormap-reference-py
+                # Otherwise default
+                query.palette or (
+                    self.DEFAULT_PALETTE
+                    if colormap in ["colormap", "default"]
+                    else colormap
+                )
+            ),
+            colorscale_range=query.colorscalerange,
+            autoscale=query.autoscale,
+        )
 
-    def select_layer(self, ds: xr.Dataset) -> xr.DataArray:
+    def select_layers(self, ds: xr.Dataset) -> list[xr.DataArray]:
         """
-        Select Dataset variable, according to WMS layers request
+        Select Dataset variables, according to WMS layers request
         :param ds:
         :return:
         """
-        return ds[self.parameter]
+        return [ds[parameter] for parameter in self.parameters]
 
     def select_time(self, da: xr.DataArray) -> xr.DataArray:
         """
@@ -334,7 +369,7 @@ class GetMap:
     def render(
         self,
         ds: xr.Dataset,
-        da: xr.DataArray,
+        das: Iterable[xr.DataArray],
         buffer: io.BytesIO,
         minmax_only: bool,
     ) -> Union[bool, dict]:
@@ -347,7 +382,8 @@ class GetMap:
         # and then send those values/flags to the next gridded function involved in the render process.
         #
         # ex. if ds.gridded.filter_by_bbox applies the grid mask to da, ds.gridded.project can avoid re-masking by checking the context
-        render_context = dict()
+        render_contexts = [dict() for _ in das]
+        das_with_contexts = zip(das, render_contexts)
 
         filter_start = time.time()
         filter_success = False
@@ -371,12 +407,12 @@ class GetMap:
             # Filter the data to only include the data within the bbox + buffer so
             # we don't have to render a ton of empty space or pull down more chunks
             # than we need
-            da, render_context = ds.gridded.filter_by_bbox(
+            das_with_contexts = [ds.gridded.filter_by_bbox(
                 da,
                 bbox,
                 self.crs,
-                render_context=render_context,
-            )
+                render_context=context,
+            ) for da, context in das_with_contexts]
 
             filter_success = True
         except Exception as e:
@@ -389,51 +425,56 @@ class GetMap:
         # if filter_by_bbox was successful, preload data for projection
         if filter_success:
             filter_load_time = time.time()
-            da = da.load()
+            das_with_contexts = [(da.load(), context) for da, context in das_with_contexts]
             logger.debug(
                 f"WMS GetMap load filtered data: {time.time() - filter_load_time}",
             )
 
         projection_start = time.time()
         try:
-            da, render_context = ds.gridded.project(
+            das_with_contexts = [ds.gridded.project(
                 da,
                 self.crs,
-                render_context=render_context,
-            )
+                render_context=context,
+            ) for da, context in das_with_contexts]
         except Exception as e:
             logger.warning(f"Projection failed: {e}")
             if minmax_only:
                 logger.warning("Falling back to default minmax")
+                da = das_to_scalar([da for da, _ in das_with_contexts])
                 return {"min": float(da.min()), "max": float(da.max())}
 
+        das = [da for da, _ in das_with_contexts]
+        render_contexts = [context for _, context in das_with_contexts]
+
         # Squeeze single value dimensions
-        da = da.squeeze()
+        das = [da.squeeze() for da in das]
         logger.debug(f"WMS GetMap Projection time: {time.time() - projection_start}")
 
-        # Print the size of the da in megabytes
-        da_size = da.nbytes
-        if da_size > self.array_render_threshold_bytes:
+        # Print the size of the das in megabytes
+        das_size = sum(da.nbytes for da in das)
+        if das_size > self.array_render_threshold_bytes:
             logger.error(
-                f"DataArray size is {da_size:.2f} bytes, which is larger than the "
+                f"DataArrays size is {das_size:.2f} bytes, which is larger than the "
                 f"threshold of {self.array_render_threshold_bytes} bytes. "
                 f"Consider increasing the threshold in the plugin configuration.",
             )
             raise HTTPException(
                 413,
-                f"DataArray too large to render: threshold is {self.array_render_threshold_bytes} bytes, data is {da_size:.2f} bytes",
+                f"DataArrays too large to render: threshold is {self.array_render_threshold_bytes} bytes, data is {das_size:.2f} bytes",
             )
-        logger.debug(f"WMS GetMap loading DataArray size: {da_size:.2f} bytes")
+        logger.debug(f"WMS GetMap loading DataArray size: {das_size:.2f} bytes")
 
         start_dask = time.time()
-        da = da.load()
+        das = [da.load() for da in das]
         logger.debug(f"WMS GetMap load full data: {time.time() - start_dask}")
 
-        if da.size == 0:
+        if sum(da.size for da in das) == 0:
             logger.warning("No data to render")
             return False
 
         if minmax_only:
+            da = das_to_scalar(das)
             try:
                 return {
                     "min": float(np.nanmin(da)),
@@ -446,23 +487,22 @@ class GetMap:
                 return {"min": float(da.min()), "max": float(da.max())}
 
         start_mesh = time.time()
-        mesh = self.create_mesh(ds, da, render_context=render_context)
+        meshes = [self.create_mesh(ds, da, render_context=context) for da, context in zip(das, render_contexts)]
         logger.debug(f"WMS GetMap Mesh time: {time.time() - start_mesh}")
 
         start_shade = time.time()
-        shaded = self.shade_mesh(mesh, )
+        im = self.shade_mesh(meshes)
         logger.debug(f"WMS GetMap Shade time: {time.time() - start_shade}")
 
-        im = shaded.to_pil()
         im.save(buffer, format="PNG")
         return True
-    
+
     def create_mesh(
         self,
         ds: xr.Dataset,
         da: xr.DataArray,
         render_context: dict,
-    ) -> xr.Dataset:
+    ) -> xr.DataArray:
         """
         Create map mesh
         """
@@ -538,19 +578,39 @@ class GetMap:
             )
 
         raise ValueError(f"Unexpected gridded dataset render method {ds.gridded.render_method}")
-    
-    def shade_mesh(self, mesh: xr.Dataset):
-        if self.style == "colormap":
-            span = (
-                None
-                if self.autoscale or self.colorscalerange is None
-                else tuple(self.colorscalerange[0:2])
+
+    def shade_mesh(self, meshes: Sequence[xr.DataArray]) -> Image:
+        if self.styles.type == "vector":
+            style_kwargs = self.styles.model_dump()
+            style_kwargs.pop('type')
+            return visualize_vectors(
+                meshes,
+                **style_kwargs,
             )
-            return tf.shade(
-                mesh,
-                cmap=matplotlib.colormaps.get_cmap(self.palettename),
-                how="linear",
-                span=span,
-            )
-        # TODO other styles
-        raise NotImplementedError(f"{self.style} is not implemented yet")
+
+        # else -> self.style_params.type is "colormap"
+        span = (
+            None
+            if self.styles.autoscale or self.styles.colorscale_range is None
+            else tuple(self.styles.colorscale_range[0:2])
+        )
+        return tf.shade(
+            meshes[0],
+            cmap=matplotlib.colormaps.get_cmap(self.styles.palettename),
+            how="linear",
+            span=span,
+        ).to_pil()
+
+
+def das_to_scalar(das: list[xr.DataArray]) -> xr.DataArray | np.ndarray:
+    """Get a scalar data array from one or two data arrays.
+
+    We assume that the input `das` is length one or at least two.
+
+    If length is one, we simply return that single array. If length is more,
+    we assume there are two arrays and they are a pair of vector components.
+    In that case we return the vector magnitude.
+    """
+    if len(das) == 1:
+        return das[0]
+    return np.sqrt(das[0]**2 + das[1]**2)
