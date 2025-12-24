@@ -29,8 +29,8 @@ def visualize_direction(
 
     # TODO: what is the data variable name? Will index 0 just work?
     # Create normalized vectors based on the direction
-    u = np.acos(mesh[0][Y, X].astype(np.float32))
-    v = np.asin(mesh[0][Y, X].astype(np.float32))
+    u = np.cos(mesh[0][Y, X].astype(np.float32))
+    v = np.sin(mesh[0][Y, X].astype(np.float32))
 
     # TODO: mask???
     # A boolean mask that will make sure we're not drawing glyphs where there's no valid data.
