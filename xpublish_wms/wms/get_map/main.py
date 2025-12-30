@@ -461,13 +461,13 @@ class GetMap:
 
         im.save(buffer, format="PNG")
         return True
-    
+
     def create_mesh(
         self,
         ds: xr.Dataset,
         da: xr.DataArray,
         render_context: dict,
-    ) -> xr.Dataset:
+    ) -> xr.DataArray:
         """
         Create map mesh
         """
@@ -543,9 +543,9 @@ class GetMap:
             )
 
         raise ValueError(f"Unexpected gridded dataset render method {ds.gridded.render_method}")
-    
-    def shade_mesh(self, mesh: xr.Dataset) -> Image:
-        if self.style == "arrow":
+
+    def shade_mesh(self, mesh: xr.DataArray) -> Image:
+        if self.style == "arrows":
             return visualize_direction(mesh)
 
         # else -> self.style == "colormap"

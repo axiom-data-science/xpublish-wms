@@ -11,8 +11,16 @@ from PIL.Image import Image, fromarray
 matplotlib.use('Agg')
 
 
+# For arrows, the length should be uniform so we scale all u/v components by the magnitude
+LENGTH_SCALE = np.array([
+    [16, 12, 8],
+    [32, 32, 16],
+    [64, 32, 24],
+])
+
+
 def visualize_direction(
-    mesh: xr.Dataset,
+    mesh: xr.DataArray,
     color: str = 'magenta',
     scale: int = 1,
     density: int = 2,
@@ -21,50 +29,47 @@ def visualize_direction(
     # Create a mesh of grid-points where we will draw arrows/barbs
     if density not in (1, 2, 3):
         raise ValueError(f'Invalid density value {density}')
+    
+    tile_size = mesh.shape[0]
+    assert tile_size == mesh.shape[1]
+
     # vector glyphs are tiled initially with 4x4 per tile at density 1, then 8x8 for density 2, then
     # 16x16 for density 3.
-    TILE_AXIS = np.arange(32 // (2 ** (density - 1)), 256, 64 // (2 ** (density - 1)))
-    TILE_AXIS *= scale
-    X, Y = np.meshgrid(TILE_AXIS, TILE_AXIS)
+    tile_axis = np.arange(32 // (2 ** (density - 1)), tile_size, 64 // (2 ** (density - 1)))
+    tile_axis *= scale
+    X, Y = np.meshgrid(tile_axis, tile_axis)
 
-    # TODO: what is the data variable name? Will index 0 just work?
-    # Create normalized vectors based on the direction
-    u = np.cos(mesh[0][Y, X].astype(np.float32))
-    v = np.sin(mesh[0][Y, X].astype(np.float32))
+    # Create normalized vectors based on the direction every n grid points
+    u = np.cos(mesh.isel(x=tile_axis, y=tile_axis).astype(np.float32))
+    v = np.sin(mesh.isel(x=tile_axis, y=tile_axis).astype(np.float32))
 
     # TODO: mask???
     # A boolean mask that will make sure we're not drawing glyphs where there's no valid data.
     # vector_mask = (mask[Y, X] == 0)
 
-    # For arrows, the length should be uniform so we scale all u/v components by the magnitude
-    length_scale = np.array([
-        [16, 12, 8],
-        [32, 32, 16],
-        [64, 32, 24],
-    ])
     # Scale the length up to so it renders properly.
-    u *= length_scale[scale - 1, density - 1]
-    v *= length_scale[scale - 1, density - 1]
+    u *= LENGTH_SCALE[scale - 1, density - 1]
+    v *= LENGTH_SCALE[scale - 1, density - 1]
 
     # Make a figure without a frame or axes, this ensures the image is exactly 256x256 or whatever
     # the appropriate scale is, as well as not drawing any axes.
-    fig = plt.figure(frameon=False, dpi=256, figsize=(scale, scale))
+    fig = plt.figure(frameon=False, dpi=tile_size, figsize=(scale, scale))
     ax = plt.Axes(fig, [0, 0, 1, 1])
     ax.set_axis_off()
     # This is extremely important. It ensures that the frame of the figure used has the same
     # dimensions and orientation as the raster tile
-    ax.set_xlim(0, 256 * scale)
-    ax.set_ylim(0, 256 * scale)
+    ax.set_xlim(0, tile_size * scale)
+    ax.set_ylim(0, tile_size * scale)
     fig.add_axes(ax)
-    # pixel/image y-coordinates start at the top and increase downward, so in terms of plotting the
-    # y-axis needs to be inverted
-    ax.invert_yaxis()
+
+    # TODO
     # Only draw glyphs where there's valid data
     # X = X[~vector_mask]
     # Y = Y[~vector_mask]
     # u = u[~vector_mask]
     # v = v[~vector_mask]
     # mag = mag[~vector_mask]
+
     render_args = {}
     args = (X, Y, u, v)
     render_args['color'] = color
