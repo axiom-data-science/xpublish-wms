@@ -21,15 +21,15 @@ LENGTH_SCALE = np.array([
 
 def visualize_direction(
     mesh: xr.DataArray,
-    color: str = 'magenta',
+    color: str,
+    density: int,
     scale: int = 1,
-    density: int = 2,
 ) -> Image:
     """Renders a vector quiver overlay."""
     # Create a mesh of grid-points where we will draw arrows/barbs
     if density not in (1, 2, 3):
         raise ValueError(f'Invalid density value {density}')
-    
+
     tile_size = mesh.shape[0]
     assert tile_size == mesh.shape[1]
 

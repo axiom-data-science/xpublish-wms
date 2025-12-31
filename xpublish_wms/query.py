@@ -195,7 +195,17 @@ class WMSGetMapQuery(WMSBaseQuery):
     )
     palette: str | None = Field(
         None,
-        description="Specify a colormap defined by matplotlibs defaults to use with STYLES: raster/colormap. Or ommit to use default colormap.",
+        description="Specify a colormap defined by matplotlib's defaults to use with STYLES: raster/colormap. Or ommit to use default colormap.",
+    )
+    color: str | None = Field(
+        None,
+        description="Color of directional arrows when using the raster/arrows style. This is a matplotlib color parameter.",
+    )
+    density: int | None = Field(
+        None,
+        description="Density of directional glyphs when using the raster/arrows style.",
+        ge=1,
+        le=3,
     )
 
     @field_validator("colorscalerange", mode="before")

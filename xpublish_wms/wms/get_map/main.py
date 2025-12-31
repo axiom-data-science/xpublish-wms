@@ -20,6 +20,7 @@ from xpublish_wms.grids import RenderMethod
 from xpublish_wms.logger import logger
 from xpublish_wms.query import GET_MAP_RASTER_STYLES, GetMapRasterStyles, WMSGetMapQuery
 from xpublish_wms.wms.get_map.arrow_style import visualize_direction
+from xpublish_wms.wms.get_map.style_types import ArrowsStyleParams, ColormapStyleParams, RasterStyleParams
 
 
 class GetMap:
@@ -53,9 +54,7 @@ class GetMap:
     height: int
 
     # Output style
-    style: GetMapRasterStyles
-    colorscalerange: Sequence[float] | None
-    autoscale: bool
+    styles: RasterStyleParams
 
     def __init__(
         self,
@@ -223,21 +222,31 @@ class GetMap:
         """
         _, raster_style = query.styles
         # if `raster_style` is not one of the style options, assume it's a colormap name
-        self.style = raster_style if raster_style in GET_MAP_RASTER_STYLES else "colormap"
+        style = raster_style if raster_style in GET_MAP_RASTER_STYLES else "colormap"
 
-        if self.style == "arrow":
+        if style == "arrows":
+            self.styles = ArrowsStyleParams(
+                type=style,
+                color=query.color or "black",
+                density=query.density or 1,
+            )
             return
-        # else: self.style is "colormap"
 
-        self.palettename = query.palette or ("default" if raster_style == "colormap" else raster_style)
-        # Let user pick cm from here https://predictablynoisy.com/matplotlib/gallery/color/colormap_reference.html#sphx-glr-gallery-color-colormap-reference-py
-        # Otherwise default to rainbow
-        if self.palettename == "default":
-            self.palettename = self.DEFAULT_PALETTE
-
-        self.colorscalerange = query.colorscalerange
-        self.autoscale = query.autoscale
-
+        # else -> style is "colormap"
+        self.styles = ColormapStyleParams(
+            type=style,
+            palettename=(
+                # Let user pick colormap from here https://predictablynoisy.com/matplotlib/gallery/color/colormap_reference.html#sphx-glr-gallery-color-colormap-reference-py
+                # Otherwise default
+                query.palette or (
+                    self.DEFAULT_PALETTE
+                    if raster_style in ["colormap", "default"]
+                    else raster_style
+                )
+            ),
+            colorscalerange=query.colorscalerange,
+            autoscale=query.autoscale
+        )
 
     def select_layer(self, ds: xr.Dataset) -> xr.DataArray:
         """
@@ -545,18 +554,22 @@ class GetMap:
         raise ValueError(f"Unexpected gridded dataset render method {ds.gridded.render_method}")
 
     def shade_mesh(self, mesh: xr.DataArray) -> Image:
-        if self.style == "arrows":
-            return visualize_direction(mesh)
+        if self.styles.type == "arrows":
+            return visualize_direction(
+                mesh,
+                color=self.styles.color,
+                density=self.styles.density,
+            )
 
-        # else -> self.style == "colormap"
+        # else -> self.style_params.type is "colormap"
         span = (
             None
-            if self.autoscale or self.colorscalerange is None
-            else tuple(self.colorscalerange[0:2])
+            if self.styles.autoscale or self.styles.colorscalerange is None
+            else tuple(self.styles.colorscalerange[0:2])
         )
         return tf.shade(
             mesh,
-            cmap=matplotlib.colormaps.get_cmap(self.palettename),
+            cmap=matplotlib.colormaps.get_cmap(self.styles.palettename),
             how="linear",
             span=span,
         ).to_pil()
