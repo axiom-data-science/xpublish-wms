@@ -12,54 +12,51 @@ matplotlib.use('Agg')
 
 
 # For arrows, the length should be uniform so we scale all u/v components by the magnitude
-LENGTH_SCALE = np.array([
-    [16, 12, 8],
-    [32, 32, 16],
-    [64, 32, 24],
-])
+LENGTH_SCALE = np.array([16, 12, 8])
 
 
 def visualize_direction(
     mesh: xr.DataArray,
     color: str,
     density: int,
-    scale: int = 1,
 ) -> Image:
     """Renders a vector quiver overlay."""
     # Create a mesh of grid-points where we will draw arrows/barbs
     if density not in (1, 2, 3):
         raise ValueError(f'Invalid density value {density}')
 
-    tile_size = mesh.shape[0]
-    assert tile_size == mesh.shape[1]
+    tile_width, tile_height = mesh.shape
 
-    # vector glyphs are tiled initially with 4x4 per tile at density 1, then 8x8 for density 2, then
-    # 16x16 for density 3.
-    tile_axis = np.arange(32 // (2 ** (density - 1)), tile_size, 64 // (2 ** (density - 1)))
-    tile_axis *= scale
-    X, Y = np.meshgrid(tile_axis, tile_axis)
+    # For a 256x256 tile, there will be:
+    # - 4x4 glyphs at density 1,
+    # - 8x8 glyphs for density 2,
+    # - 16x16 glyphs for density 3.
+    grid_step = 64 // (2 ** (density - 1))
+    x_axis = np.arange(grid_step // 2, tile_width, grid_step)
+    y_axis = np.arange(grid_step // 2, tile_height, grid_step)
+    X, Y = np.meshgrid(x_axis, y_axis)
 
-    # Create normalized vectors based on the direction every n grid points
-    u = np.cos(mesh.isel(x=tile_axis, y=tile_axis).astype(np.float32))
-    v = np.sin(mesh.isel(x=tile_axis, y=tile_axis).astype(np.float32))
+    # Create normalized vectors based on the direction in a subgrid
+    u = np.cos(mesh.isel(x=x_axis, y=y_axis).astype(np.float32))
+    v = np.sin(mesh.isel(x=x_axis, y=y_axis).astype(np.float32))
 
     # TODO: mask???
     # A boolean mask that will make sure we're not drawing glyphs where there's no valid data.
     # vector_mask = (mask[Y, X] == 0)
 
     # Scale the length up to so it renders properly.
-    u *= LENGTH_SCALE[scale - 1, density - 1]
-    v *= LENGTH_SCALE[scale - 1, density - 1]
+    u *= LENGTH_SCALE[density - 1]
+    v *= LENGTH_SCALE[density - 1]
 
     # Make a figure without a frame or axes, this ensures the image is exactly 256x256 or whatever
     # the appropriate scale is, as well as not drawing any axes.
-    fig = plt.figure(frameon=False, dpi=tile_size, figsize=(scale, scale))
+    fig = plt.figure(frameon=False, dpi=1, figsize=(tile_width, tile_height))
     ax = plt.Axes(fig, [0, 0, 1, 1])
     ax.set_axis_off()
     # This is extremely important. It ensures that the frame of the figure used has the same
     # dimensions and orientation as the raster tile
-    ax.set_xlim(0, tile_size * scale)
-    ax.set_ylim(0, tile_size * scale)
+    ax.set_xlim(0, tile_width)
+    ax.set_ylim(0, tile_height)
     fig.add_axes(ax)
 
     # TODO
@@ -68,7 +65,6 @@ def visualize_direction(
     # Y = Y[~vector_mask]
     # u = u[~vector_mask]
     # v = v[~vector_mask]
-    # mag = mag[~vector_mask]
 
     render_args = {}
     args = (X, Y, u, v)
