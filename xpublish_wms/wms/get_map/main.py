@@ -74,6 +74,7 @@ class GetMap:
         """
         Return the WMS map for the dataset and given parameters
         """
+        start_get_map = time.time()
         # Decode request params
         try:
             self.ensure_query_types(ds, query, query_params)
@@ -140,6 +141,7 @@ class GetMap:
         if render_result:
             image_buffer.seek(0)
 
+        logger.debug(f"WMS GetMap TOTAL time: {time.time() - start_get_map}")
         return Response(image_buffer.getbuffer(), media_type="image/png")
 
     def get_minmax(
