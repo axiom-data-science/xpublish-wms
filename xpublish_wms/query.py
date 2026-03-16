@@ -134,7 +134,10 @@ class WMSGetMetadataQuery(WMSBaseQuery):
     @classmethod
     def validate_bbox(cls, v: str | None) -> tuple[float, float, float, float] | None:
         return validate_bbox(v)
+    
 
+GetMapSourceType = Literal["raster", "vector"]
+GetMapVectorScale = Literal["uniform", "constant"]
 
 class WMSGetMapQuery(WMSBaseQuery):
     """WMS GetMap query"""
@@ -143,9 +146,15 @@ class WMSGetMapQuery(WMSBaseQuery):
     layers: str = Field(
         validation_alias=AliasChoices("layername", "layers", "query_layers"),
     )
-    styles: tuple[str, str] = Field(
-        ("raster", "default"),
-        description="Style to use for the query. Defaults to raster/default. Default may be replaced by the name of any colormap defined by matplotlibs defaults",
+    styles: tuple[GetMapSourceType, Literal["colormap", "none"] | str] = Field(
+        ("raster", "colormap"),
+        description=(
+            "Style to use for the query. Options: 'raster/colormap', 'vector/colormap'. You can also provide "
+            "a name of any colormap defined by matplotlib's defaults directly like 'raster/turbo'. "
+            "For vector tiles, 'vector/none' can be used to render directional glyphs only."
+            "Passing 'raseter/default' uses the clormap style with the default colormap. "
+            "This parameter defaults to 'raster/colormap'."
+        ),
     )
     crs: Literal["EPSG:4326", "EPSG:3857"] = Field(
         "EPSG:4326",
@@ -183,6 +192,24 @@ class WMSGetMapQuery(WMSBaseQuery):
     autoscale: bool = Field(
         False,
         description="Whether to automatically scale the color scale range based on the data. When specified, colorscalerange is ignored",
+    )
+    palette: str | None = Field(
+        None,
+        description="Specify a colormap defined by matplotlib's defaults to use with STYLES: raster/colormap. Or ommit to use default colormap.",
+    )
+    vectorscale: GetMapVectorScale = Field(
+        "constant",
+        description="Specify how directional glyphs should be scaled based on magnitude."
+    )
+    color: str = Field(
+        "black",
+        description="Color of directional glyphs when using a vector style. This is a matplotlib color parameter.",
+    )
+    density: int | None = Field(
+        None,
+        description="Density of directional glyphs when using a vector style.",
+        ge=1,
+        le=3,
     )
 
     @field_validator("colorscalerange", mode="before")
