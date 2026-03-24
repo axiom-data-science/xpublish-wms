@@ -169,11 +169,15 @@ class GetMap:
 
         # Prepare the data as if we are going to render it, but instead grab the min and max
         # values from the data to represent the range of values in the given area
-        if entire_layer:
-            da = das_to_scalar(das)
-            return {"min": float(da.min()), "max": float(da.max())}
-        else:
-            return self.render(ds, das, None, minmax_only=True)
+        filtered_das = das if entire_layer else self.render(ds, das, None, minmax_only=True)
+        if isinstance(filtered_das, bool):
+            # render method returned False because the filtered DataArray was empty
+            return {"min": 0, "max": 0}
+
+        # TODO: handle memory allocation error
+        da = das_to_scalar(filtered_das)
+
+        return {"min": float(da.min()), "max": float(da.max())}
 
     def ensure_query_types(
         self,
@@ -364,11 +368,14 @@ class GetMap:
         self,
         ds: xr.Dataset,
         das: Iterable[xr.DataArray],
-        buffer: io.BytesIO,
+        buffer: io.BytesIO | None,
         minmax_only: bool,
-    ) -> Union[bool, dict]:
+    ) -> Union[bool, List[xr.DataArray]]:
         """
-        Render the data array into an image buffer
+        Render the data array into an image buffer.
+
+        If `minmax_only` is True, return the DataArrays before rendering them into
+        the image buffer instead.
         """
 
         # default context object to pass around between grid functions
@@ -435,8 +442,7 @@ class GetMap:
             logger.warning(f"Projection failed: {e}")
             if minmax_only:
                 logger.warning("Falling back to default minmax")
-                da = das_to_scalar([da for da, _ in das_with_contexts])
-                return {"min": float(da.min()), "max": float(da.max())}
+                return [da for da, _ in das_with_contexts]
 
         das = [da for da, _ in das_with_contexts]
         render_contexts = [context for _, context in das_with_contexts]
@@ -461,24 +467,14 @@ class GetMap:
 
         start_dask = time.time()
         das = [da.load() for da in das]
-        logger.debug(f"WMS GetMap load full data: {time.time() - start_dask}")
+        logger.debug(f"wms getmap load full data: {time.time() - start_dask}")
 
         if sum(da.size for da in das) == 0:
-            logger.warning("No data to render")
+            logger.warning("no data to render")
             return False
 
         if minmax_only:
-            da = das_to_scalar(das)
-            try:
-                return {
-                    "min": float(np.nanmin(da)),
-                    "max": float(np.nanmax(da)),
-                }
-            except Exception as e:
-                logger.error(
-                    f"Error computing minmax: {e}, falling back to full layer minmax",
-                )
-                return {"min": float(da.min()), "max": float(da.max())}
+            return das
 
         start_mesh = time.time()
         meshes = [self.create_mesh(ds, da, render_context=context) for da, context in zip(das, render_contexts)]
@@ -488,6 +484,7 @@ class GetMap:
         im = self.shade_mesh(meshes)
         logger.debug(f"WMS GetMap Shade time: {time.time() - start_shade}")
 
+        assert buffer is not None, "buffer was None but minmax is False"
         im.save(buffer, format="PNG")
         return True
 
@@ -596,7 +593,7 @@ class GetMap:
         ).to_pil()
 
 
-def das_to_scalar(das: list[xr.DataArray]) -> xr.DataArray | np.ndarray:
+def das_to_scalar(das: List[xr.DataArray]) -> xr.DataArray | np.ndarray:
     """Get a scalar data array from one or two data arrays.
 
     We assume that the input `das` is length one or at least two.
