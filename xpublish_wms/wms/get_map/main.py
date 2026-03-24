@@ -174,10 +174,23 @@ class GetMap:
             # render method returned False because the filtered DataArray was empty
             return {"min": 0, "max": 0}
 
-        # TODO: handle memory allocation error
+        # Get one DataArray from one or more
         da = das_to_scalar(filtered_das)
 
-        return {"min": float(da.min()), "max": float(da.max())}
+        try:
+            # `da` seems to be lazy and when accessed here for a computed magnitude
+            # of vecotor component layers, we can run into allocation errors.
+            return {"min": float(da.min()), "max": float(da.max())}
+        except MemoryError as err:
+            logger.error(f"Failed to allocate enough memory to calculate min/max: {err}")
+            if len(filtered_das) == 2:
+                # for vectorc layers, try to calculate a ceiling of the magnitude as a fallback
+                max_x, max_y = (np.abs(da).max() for da in filtered_das)
+                ceiling = float(np.sqrt(max_x**2 + max_y**2))
+                # magnitude cannot be negative so 0 is the floor
+                return {"min": 0, "max": ceiling}
+
+            raise err
 
     def ensure_query_types(
         self,
