@@ -1,7 +1,7 @@
 import io
 import time
 from datetime import datetime
-from typing import List, Union
+from typing import List, Sequence, Union
 
 import cachey
 import cf_xarray  # noqa
@@ -14,10 +14,13 @@ import pandas as pd
 import xarray as xr
 from fastapi import HTTPException
 from fastapi.responses import Response
+from PIL.Image import Image
 
 from xpublish_wms.grids import RenderMethod
 from xpublish_wms.logger import logger
-from xpublish_wms.query import WMSGetMapQuery
+from xpublish_wms.query import GET_MAP_RASTER_STYLES, GetMapRasterStyles, WMSGetMapQuery
+from xpublish_wms.wms.get_map.arrow_style import visualize_direction
+from xpublish_wms.wms.get_map.style_types import ArrowsStyleParams, ColormapStyleParams, RasterStyleParams
 
 
 class GetMap:
@@ -51,9 +54,7 @@ class GetMap:
     height: int
 
     # Output style
-    style: str
-    colorscalerange: List[float]
-    autoscale: bool
+    styles: RasterStyleParams
 
     def __init__(
         self,
@@ -207,20 +208,45 @@ class GetMap:
         self.height = query.height
 
         # Output style
-        _, self.palettename = query.styles
-        # Let user pick cm from here https://predictablynoisy.com/matplotlib/gallery/color/colormap_reference.html#sphx-glr-gallery-color-colormap-reference-py
-        # Otherwise default to rainbow
-        if self.palettename == "default":
-            self.palettename = self.DEFAULT_PALETTE
-
-        self.colorscalerange = query.colorscalerange
-        self.autoscale = query.autoscale
+        self.decode_query_styles(query)
 
         available_selectors = ds.gridded.additional_coords(ds[self.parameter])
         self.dim_selectors = {
             k: query_params[k] if k in query_params else None
             for k in available_selectors
         }
+
+    def decode_query_styles(self, query: WMSGetMapQuery):
+        """
+        Decode request parameters related to render style
+        """
+        _, raster_style = query.styles
+        # if `raster_style` is not one of the style options, assume it's a colormap name
+        style = raster_style if raster_style in GET_MAP_RASTER_STYLES else "colormap"
+
+        if style == "arrows":
+            self.styles = ArrowsStyleParams(
+                type=style,
+                color=query.color or "black",
+                density=query.density or 1,
+            )
+            return
+
+        # else -> style is "colormap"
+        self.styles = ColormapStyleParams(
+            type=style,
+            palettename=(
+                # Let user pick colormap from here https://predictablynoisy.com/matplotlib/gallery/color/colormap_reference.html#sphx-glr-gallery-color-colormap-reference-py
+                # Otherwise default
+                query.palette or (
+                    self.DEFAULT_PALETTE
+                    if raster_style in ["colormap", "default"]
+                    else raster_style
+                )
+            ),
+            colorscalerange=query.colorscalerange,
+            autoscale=query.autoscale
+        )
 
     def select_layer(self, ds: xr.Dataset) -> xr.DataArray:
         """
@@ -434,19 +460,26 @@ class GetMap:
                 )
                 return {"min": float(da.min()), "max": float(da.max())}
 
-        if not self.autoscale:
-            span = (self.colorscalerange[0], self.colorscalerange[1])
-        else:
-            span = None
-
         start_mesh = time.time()
-        cvs = dsh.Canvas(
-            plot_height=self.height,
-            plot_width=self.width,
-            x_range=(self.bbox[0], self.bbox[2]),
-            y_range=(self.bbox[1], self.bbox[3]),
-        )
+        mesh = self.create_mesh(ds, da, render_context=render_context)
+        logger.debug(f"WMS GetMap Mesh time: {time.time() - start_mesh}")
 
+        start_shade = time.time()
+        im = self.shade_mesh(mesh)
+        logger.debug(f"WMS GetMap Shade time: {time.time() - start_shade}")
+
+        im.save(buffer, format="PNG")
+        return True
+
+    def create_mesh(
+        self,
+        ds: xr.Dataset,
+        da: xr.DataArray,
+        render_context: dict,
+    ) -> xr.DataArray:
+        """
+        Create map mesh
+        """
         # numba only supports float32 and float64. Cast everything else
         if da.dtype.kind == "f" and da.dtype.itemsize != 4 and da.dtype.itemsize != 8:
             logger.warning(
@@ -469,23 +502,32 @@ class GetMap:
                     f"greater than 64-bit. This is not currently supported.",
                 )
 
+        cvs = dsh.Canvas(
+            plot_height=self.height,
+            plot_width=self.width,
+            x_range=(self.bbox[0], self.bbox[2]),
+            y_range=(self.bbox[1], self.bbox[3]),
+        )
+
         if ds.gridded.render_method == RenderMethod.Raster:
-            mesh = cvs.raster(
+            return cvs.raster(
                 da,
             )
-        elif ds.gridded.render_method == RenderMethod.Quad:
+
+        if ds.gridded.render_method == RenderMethod.Quad:
             try:
-                mesh = cvs.quadmesh(
+                return cvs.quadmesh(
                     da,
                     x="x",
                     y="y",
                 )
             except Exception as e:
                 logger.warning(f"Error rendering quadmesh: {e}, falling back to raster")
-                mesh = cvs.raster(
+                return cvs.raster(
                     da,
                 )
-        elif ds.gridded.render_method == RenderMethod.Triangle:
+
+        if ds.gridded.render_method == RenderMethod.Triangle:
             triangles, render_context = ds.gridded.tessellate(
                 da,
                 render_context=render_context,
@@ -504,21 +546,30 @@ class GetMap:
                 verts = pd.DataFrame({"x": da.x, "y": da.y, "z": da})
                 tris = pd.DataFrame(triangles.astype(int), columns=["v0", "v1", "v2"])
 
-            mesh = cvs.trimesh(
+            return cvs.trimesh(
                 verts,
                 tris,
             )
-        logger.debug(f"WMS GetMap Mesh time: {time.time() - start_mesh}")
 
-        start_shade = time.time()
-        shaded = tf.shade(
+        raise ValueError(f"Unexpected gridded dataset render method {ds.gridded.render_method}")
+
+    def shade_mesh(self, mesh: xr.DataArray) -> Image:
+        if self.styles.type == "arrows":
+            return visualize_direction(
+                mesh,
+                color=self.styles.color,
+                density=self.styles.density,
+            )
+
+        # else -> self.style_params.type is "colormap"
+        span = (
+            None
+            if self.styles.autoscale or self.styles.colorscalerange is None
+            else tuple(self.styles.colorscalerange[0:2])
+        )
+        return tf.shade(
             mesh,
-            cmap=matplotlib.colormaps.get_cmap(self.palettename),
+            cmap=matplotlib.colormaps.get_cmap(self.styles.palettename),
             how="linear",
             span=span,
-        )
-        logger.debug(f"WMS GetMap Shade time: {time.time() - start_shade}")
-
-        im = shaded.to_pil()
-        im.save(buffer, format="PNG")
-        return True
+        ).to_pil()
