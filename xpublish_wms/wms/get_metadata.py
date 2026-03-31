@@ -2,6 +2,7 @@ import datetime as dt
 
 import cachey
 import cf_xarray  # noqa
+import numpy as np
 import xarray as xr
 from fastapi import HTTPException, Response
 from fastapi.responses import JSONResponse
@@ -141,7 +142,7 @@ def get_layer_details(ds: xr.Dataset, layer_name: str) -> dict:
     supported_styles = "raster"  # TODO: more styles
     bbox = ds.gridded.bbox(da)
     if ds.gridded.has_elevation(da):
-        elevation = ds.gridded.elevations(da).values.round(5).tolist()
+        elevation = np.atleast_1d(ds.gridded.elevations(da).values).round(5).tolist()
         elevation_positive = ds.gridded.elevation_positive_direction(da)
         elevation_units = ds.gridded.elevation_units(da)
     else:
