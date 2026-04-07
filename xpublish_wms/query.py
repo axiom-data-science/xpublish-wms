@@ -1,4 +1,4 @@
-from typing import Any, Literal, Optional, Union
+from typing import Any, List, Literal, Optional, Union
 
 from pydantic import (
     AliasChoices,
@@ -77,6 +77,18 @@ def validate_style(v: str | None) -> tuple[str, str] | None:
     return (values[0], values[1])
 
 
+LAYER_DELIMITER = ","
+
+def validate_layers(layers_str: str | None) -> List[str] | None:
+    """Parse layer name list and validate it."""
+    if layers_str is None:
+        return None
+    layers = layers_str.split(LAYER_DELIMITER)
+    if len(layers) > 2:
+        raise ValueError("More than two layers are not supported")
+    return layers
+
+
 class WMSBaseQuery(BaseModel):
     service: Literal["WMS"] = Field(..., description="Service type. Must be WMS")
     version: Literal["1.1.1", "1.3.0"] = Field(
@@ -95,7 +107,7 @@ class WMSGetMetadataQuery(WMSBaseQuery):
     """WMS GetMetadata query"""
 
     request: Literal["GetMetadata"] = Field(..., description="Request type")
-    layername: Optional[str] = Field(
+    layers: Optional[List[str]] = Field(
         None,
         description="Name of the layer to get metadata for",
         validation_alias=AliasChoices("layername", "layers", "query_layers"),
@@ -135,11 +147,17 @@ class WMSGetMetadataQuery(WMSBaseQuery):
     def validate_bbox(cls, v: str | None) -> tuple[float, float, float, float] | None:
         return validate_bbox(v)
 
+    @field_validator("layers", mode="before")
+    @classmethod
+    def validate_layers(cls, val: str | None) -> List[str] | None:
+        return validate_layers(val)
+
 # Future styles might include:
 # - vector-arrow-tail/none (magnitude visualized by arrow tail length),
 # - vector-arrow-scale/none (magnitude visualized by uniform arrow scaling),
 # - vector-barb/none
 GetMapStyleMethod = Literal["raster", "vector-arrow", "vector-arrow-color"]
+GET_MAP_STYLE_METHODS: List[GetMapStyleMethod] = ["raster", "vector-arrow", "vector-arrow-color"]
 
 class WMSGetMapQuery(WMSBaseQuery):
     """WMS GetMap query"""
