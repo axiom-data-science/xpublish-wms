@@ -315,7 +315,8 @@ class WMSGetLegendInfoQuery(WMSBaseQuery):
     """WMS GetLegendInfo query"""
 
     request: Literal["GetLegendGraphic"] = Field(..., description="Request type")
-    layers: str = Field(
+    layers: Optional[str] = Field(
+        None,
         validation_alias=AliasChoices("layername", "layers", "query_layers"),
     )
     width: int
