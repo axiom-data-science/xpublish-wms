@@ -305,6 +305,10 @@ class FVCOMGrid(Grid):
         if not self.has_elevation(da):
             return da
 
+        if "vertical" in da.cf and da.cf["vertical"].ndim == 0:
+            # elevation is a scalar, nothing to select
+            return da
+
         if (
             elevations is None
             or len(elevations) == 0

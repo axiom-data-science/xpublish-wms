@@ -1,4 +1,4 @@
-from typing import Any, Literal, Optional, Union
+from typing import Any, List, Literal, Optional, Union
 
 from pydantic import (
     AliasChoices,
@@ -77,6 +77,18 @@ def validate_style(v: str | None) -> tuple[str, str] | None:
     return (values[0], values[1])
 
 
+LAYER_DELIMITER = ","
+
+def validate_layers(layers_str: str | None) -> List[str] | None:
+    """Parse layer name list and validate it."""
+    if layers_str is None:
+        return None
+    layers = layers_str.split(LAYER_DELIMITER)
+    if len(layers) > 2:
+        raise ValueError("More than two layers are not supported")
+    return layers
+
+
 class WMSBaseQuery(BaseModel):
     service: Literal["WMS"] = Field(..., description="Service type. Must be WMS")
     version: Literal["1.1.1", "1.3.0"] = Field(
@@ -95,7 +107,7 @@ class WMSGetMetadataQuery(WMSBaseQuery):
     """WMS GetMetadata query"""
 
     request: Literal["GetMetadata"] = Field(..., description="Request type")
-    layername: Optional[str] = Field(
+    layers: Optional[List[str]] = Field(
         None,
         description="Name of the layer to get metadata for",
         validation_alias=AliasChoices("layername", "layers", "query_layers"),
@@ -135,6 +147,17 @@ class WMSGetMetadataQuery(WMSBaseQuery):
     def validate_bbox(cls, v: str | None) -> tuple[float, float, float, float] | None:
         return validate_bbox(v)
 
+    @field_validator("layers", mode="before")
+    @classmethod
+    def validate_layers(cls, val: str | None) -> List[str] | None:
+        return validate_layers(val)
+
+# Future styles might include:
+# - vector-arrow-tail/none (magnitude visualized by arrow tail length),
+# - vector-arrow-scale/none (magnitude visualized by uniform arrow scaling),
+# - vector-barb/none
+GetMapStyleMethod = Literal["raster", "vector-arrow", "vector-arrow-color"]
+GET_MAP_STYLE_METHODS: List[GetMapStyleMethod] = ["raster", "vector-arrow", "vector-arrow-color"]
 
 class WMSGetMapQuery(WMSBaseQuery):
     """WMS GetMap query"""
@@ -143,9 +166,17 @@ class WMSGetMapQuery(WMSBaseQuery):
     layers: str = Field(
         validation_alias=AliasChoices("layername", "layers", "query_layers"),
     )
-    styles: tuple[str, str] = Field(
+    styles: tuple[GetMapStyleMethod, Literal["none"] | str] = Field(
         ("raster", "default"),
-        description="Style to use for the query. Defaults to raster/default. Default may be replaced by the name of any colormap defined by matplotlibs defaults",
+        description=(
+            "Style to use for the query. Options: 'raster/<colormap>', 'vector-arrow/none', "
+            "'vector-arrow/<colormap>', 'vector-arrow-color/<colormap>'. You can provide "
+            "a name of any colormap defined by matplotlib's defaults directly like 'raster/turbo'. "
+            "For vector tiles, 'vector-arrow/<colormap> renders directional arrows with "
+            "raster backing visualizing magnitude. 'vector-arrow/none' can be used for arrows only. "
+            "Passing 'raster/default' uses the default colormap. "
+            "This parameter defaults to 'raster/colormap'."
+        ),
     )
     crs: Literal["EPSG:4326", "EPSG:3857"] = Field(
         "EPSG:4326",
@@ -183,6 +214,16 @@ class WMSGetMapQuery(WMSBaseQuery):
     autoscale: bool = Field(
         False,
         description="Whether to automatically scale the color scale range based on the data. When specified, colorscalerange is ignored",
+    )
+    color: str = Field(
+        "black",
+        description="Color of directional glyphs when using a vector style. This is a matplotlib color parameter.",
+    )
+    density: int | None = Field(
+        None,
+        description="Density of directional glyphs when using a vector style.",
+        ge=1,
+        le=3,
     )
 
     @field_validator("colorscalerange", mode="before")
@@ -274,7 +315,8 @@ class WMSGetLegendInfoQuery(WMSBaseQuery):
     """WMS GetLegendInfo query"""
 
     request: Literal["GetLegendGraphic"] = Field(..., description="Request type")
-    layers: str = Field(
+    layers: Optional[str] = Field(
+        None,
         validation_alias=AliasChoices("layername", "layers", "query_layers"),
     )
     width: int
