@@ -11,6 +11,7 @@ import datashader.transfer_functions as tf
 import matplotlib
 import mercantile
 import numpy as np
+from numpy.typing import NDArray
 import pandas as pd
 import xarray as xr
 from fastapi import HTTPException
@@ -21,7 +22,7 @@ from xpublish_wms.grids import RenderMethod
 from xpublish_wms.logger import logger
 from xpublish_wms.query import WMSGetMapQuery
 from xpublish_wms.wms.get_map.style_types import ColormapStyleParams, ShadingStyleParams, VectorStyleParams
-from xpublish_wms.wms.get_map.vector_styles import visualize_vectors
+from xpublish_wms.wms.get_map.vector_styles import visualize_vectors, get_cell_center_indices
 
 
 class GetMap:
@@ -266,8 +267,9 @@ class GetMap:
                 scaling=VectorStyleParams.GlyphScaling.CONSTANT,
                 colorscale_range=query.colorscalerange,
                 colormap=None if palette_name == "none" else palette_name,
-                draw_backing=palette_name != "none" and style_type == "vector-arrow",
-                arrow_mag_color=style_type == "vector-arrow-color",
+                draw_backing=palette_name != "none" and style_type in ("vector-arrow", "vector-cells-arrow"),
+                arrow_mag_color=style_type in ("vector-arrow-color", "vector-cells-arrow-color"),
+                use_cell_centers=style_type.startswith("vector-cells-"),
             )
             return
 
@@ -490,11 +492,16 @@ class GetMap:
             return das
 
         start_mesh = time.time()
+        cell_center_indices = (
+            get_cell_center_indices(das, self.bbox, self.width, self.height)
+            if self.styles.type == "vector" and self.styles.use_cell_centers
+            else None
+        )
         meshes = [self.create_mesh(ds, da, render_context=context) for da, context in zip(das, render_contexts)]
         logger.debug(f"WMS GetMap Mesh time: {time.time() - start_mesh}")
 
         start_shade = time.time()
-        im = self.shade_mesh(meshes)
+        im = self.shade_mesh(meshes, cell_center_indices)
         logger.debug(f"WMS GetMap Shade time: {time.time() - start_shade}")
 
         assert buffer is not None, "buffer was None but minmax is False"
@@ -583,12 +590,14 @@ class GetMap:
 
         raise ValueError(f"Unexpected gridded dataset render method {ds.gridded.render_method}")
 
-    def shade_mesh(self, meshes: Sequence[xr.DataArray]) -> Image:
+    def shade_mesh(self, meshes: Sequence[xr.DataArray], cell_center_indices: tuple[NDArray[np.intp], NDArray[np.intp]] | None) -> Image:
         if self.styles.type == "vector":
             style_kwargs = self.styles.model_dump()
-            style_kwargs.pop('type')
+            style_kwargs.pop("type")
+            use_cell_centers = style_kwargs.pop("use_cell_centers")
             return visualize_vectors(
                 meshes,
+                cell_center_indices=cell_center_indices if use_cell_centers else None,
                 **style_kwargs,
             )
 

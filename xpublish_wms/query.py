@@ -156,8 +156,8 @@ class WMSGetMetadataQuery(WMSBaseQuery):
 # - vector-arrow-tail/none (magnitude visualized by arrow tail length),
 # - vector-arrow-scale/none (magnitude visualized by uniform arrow scaling),
 # - vector-barb/none
-GetMapStyleMethod = Literal["raster", "vector-arrow", "vector-arrow-color"]
-GET_MAP_STYLE_METHODS: List[GetMapStyleMethod] = ["raster", "vector-arrow", "vector-arrow-color"]
+GetMapStyleMethod = Literal["raster", "vector-arrow", "vector-arrow-color", "vector-cells-arrow", "vector-cells-arrow-color"]
+GET_MAP_STYLE_METHODS: List[GetMapStyleMethod] = ["raster", "vector-arrow", "vector-arrow-color", "vector-cells-arrow", "vector-cells-arrow-color"]
 
 class WMSGetMapQuery(WMSBaseQuery):
     """WMS GetMap query"""
@@ -170,11 +170,13 @@ class WMSGetMapQuery(WMSBaseQuery):
         ("raster", "default"),
         description=(
             "Style to use for the query. Options: 'raster/<colormap>', 'vector-arrow/none', "
-            "'vector-arrow/<colormap>', 'vector-arrow-color/<colormap>'. You can provide "
-            "a name of any colormap defined by matplotlib's defaults directly like 'raster/turbo'. "
-            "For vector tiles, 'vector-arrow/<colormap> renders directional arrows with "
+            "'vector-arrow/<colormap>', 'vector-arrow-color/<colormap>', 'vector-cells-arrow/<colormap>', "
+            "'vector-cells-arrow-color/<colormap>'. "
+            "You can provide a name of any colormap defined by matplotlib's defaults directly like 'raster/turbo'. "
+            "For vector tiles, 'vector-arrow/<colormap>' renders directional arrows with "
             "raster backing visualizing magnitude. 'vector-arrow/none' can be used for arrows only. "
-            "Passing 'raster/default' uses the default colormap. "
+            "'vector-cells-arrow-*/<colormap>' renders at maximum one arrow per data cell. "
+            "Passing 'default' as '<colormap>' uses the default colormap. "
             "This parameter defaults to 'raster/colormap'."
         ),
     )
