@@ -493,7 +493,7 @@ class GetMap:
 
         start_mesh = time.time()
         cell_center_indices = (
-            get_cell_center_indices(das, self.bbox, self.width, self.height)
+            get_cell_center_indices(das, self.bbox, self.width, self.height, self.styles.density)
             if self.styles.type == "vector" and self.styles.use_cell_centers
             else None
         )
