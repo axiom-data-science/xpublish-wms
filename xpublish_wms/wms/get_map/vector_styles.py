@@ -10,7 +10,7 @@ from matplotlib import pyplot as plt # noqa
 from PIL.Image import Image
 
 from xpublish_wms.wms.get_map.style_types import VectorStyleParams
-from xpublish_wms.wms.get_map.vectors import get_meshgrid, render_vector_arrows, setup_tile_plot
+from xpublish_wms.wms.get_map.vectors import get_grid_step, get_meshgrid, render_vector_arrows, setup_tile_plot
 
 
 # Scale arrow length
@@ -29,15 +29,12 @@ def get_cell_center_indices(
     height: int,
     density: int,
 ) -> tuple[NDArray[np.intp], NDArray[np.intp]]:
-    """Return (x_indices, y_indices) pixel coordinates of data cell centers within the tile.
+    """Return (px, py) pixel coordinates of subsampled data cell centers within the tile.
 
-    Uses broadcast_like to expand 1-D dimensional coords (regular grids) to the
-    data's dimension order before raveling, ensuring x/y positions correspond to
-    values element-wise. Both returned arrays are 1D and the same length.
-
-    Subsampling mirrors get_meshgrid: cell centers are binned into pixel-space
-    buckets of size `grid_step`; the first real cell center in each bucket is kept,
-    so every arrow still anchors on an actual data cell.
+    Projects cell centers from data coordinates into pixel space.
+    Also applies subsampling so that returned points are at least `grid_step`
+    apart depending on `density`. Cell centers that fall into the same subsampling
+    bin get replaced by their midpoint.
     """
     x_full = das[0].x.broadcast_like(das[0])
     y_full = das[0].y.broadcast_like(das[0])
@@ -47,9 +44,16 @@ def get_cell_center_indices(
     in_tile = (px >= 0) & (px < width) & (py >= 0) & (py < height)
     px, py = px[in_tile], py[in_tile]
 
-    # Subsample data points to prevent too many vector glyphs
-    grid_step = 64 // (2 ** (density - 1))
-    bucket_ids = (px // grid_step) * (height // grid_step + 1) + (py // grid_step)
+    # Subsample cell centers to be at max `grid_step` away from each other
+    grid_step = get_grid_step(density)
+    x_span = bbox[2] - bbox[0]
+    y_span = bbox[3] - bbox[1]
+    # for bucket assignment use globally aligned pixel coordinates,
+    # so that bucket edges line up accross all tiles
+    px_shifted = px + int(bbox[0] / x_span * width % grid_step)
+    py_shifted = py + int(bbox[1] / y_span * height % grid_step)
+    # assign bucket IDs based on pixel-space coordinates
+    bucket_ids = (px_shifted // grid_step) * (height // grid_step + 1) + (py_shifted // grid_step)
     # all the buckets with more than one cell center
     _, inverse = np.unique(bucket_ids, return_inverse=True)
     # calculate a mean point for multiple cell centers by averaging their coords
@@ -70,6 +74,7 @@ def visualize_vectors(
     draw_backing: bool = False,
     arrow_mag_color: bool = False,
     cell_center_indices: tuple[NDArray[np.intp], NDArray[np.intp]] | None = None,
+    margin_px: int = 0,
 ) -> Image:
     """Renders a vector tile image."""
     # Create a mesh of grid-points where we will draw arrows/barbs
@@ -151,7 +156,10 @@ def visualize_vectors(
         "vmin": colorscale_range[0] if arrow_mag_color and colorscale_range else None,
         "vmax": colorscale_range[1] if arrow_mag_color and colorscale_range else None,
     }
-    return render_vector_arrows(fig, ax, render_args, render_kwargs)
+    im = render_vector_arrows(fig, ax, render_args, render_kwargs)
+    if margin_px > 0:
+        im = im.crop((margin_px, margin_px, im.width - margin_px, im.height - margin_px))
+    return im
 
 
 def get_colormaps() -> List[str]:

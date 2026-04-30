@@ -14,6 +14,11 @@ from PIL.Image import Image, fromarray
 matplotlib.use('Agg')
 
 
+def get_grid_step(density: int):
+    """Return vector glyph grid step for given density."""
+    return 64 // (2 ** (density - 1))
+
+
 def get_meshgrid(
     density: int, tile_width: int, tile_height: int
 ) -> Tuple[NDArray[np.intp], NDArray[np.intp]]:
@@ -23,7 +28,7 @@ def get_meshgrid(
     at density 1, 2, or 3 respectively. Both returned arrays are 1D and the same
     length so each (x[i], y[i]) pair is one arrow anchor position.
     """
-    grid_step = 64 // (2 ** (density - 1))
+    grid_step = get_grid_step(density)
     xi = np.arange(grid_step // 2, tile_width, grid_step)
     yi = np.arange(grid_step // 2, tile_height, grid_step)
     xs, ys = np.meshgrid(xi, yi)

@@ -1,4 +1,5 @@
 from functools import partial
+import functools
 import io
 import time
 from datetime import datetime
@@ -22,7 +23,7 @@ from xpublish_wms.grids import RenderMethod
 from xpublish_wms.logger import logger
 from xpublish_wms.query import WMSGetMapQuery
 from xpublish_wms.wms.get_map.style_types import ColormapStyleParams, ShadingStyleParams, VectorStyleParams
-from xpublish_wms.wms.get_map.vector_styles import visualize_vectors, get_cell_center_indices
+from xpublish_wms.wms.get_map.vector_styles import get_grid_step, visualize_vectors, get_cell_center_indices
 
 
 class GetMap:
@@ -57,6 +58,40 @@ class GetMap:
 
     # Output style
     styles: ShadingStyleParams
+
+    # NOTE: none of the following cached properties should be accessed before
+    # `ensure_query_types` populates the static attributes above
+
+    @functools.cached_property
+    def margin_px(self) -> int:
+        """Pixel margin added to each side of the mesh canvas for cell-center vector styles."""
+        if self.styles.type == "vector" and self.styles.use_cell_centers:
+            return get_grid_step(self.styles.density)
+        return 0
+
+    @functools.cached_property
+    def mesh_bbox(self) -> tuple[float, float, float, float]:
+        """Tile bbox expanded by margin_px on each side, in data coordinates."""
+        if self.margin_px == 0:
+            return self.bbox
+        x_span = abs(self.bbox[2] - self.bbox[0])
+        y_span = abs(self.bbox[3] - self.bbox[1])
+        x_margin = x_span / self.width * self.margin_px
+        y_margin = y_span / self.height * self.margin_px
+        return (
+            self.bbox[0] - x_margin,
+            self.bbox[1] - y_margin,
+            self.bbox[2] + x_margin,
+            self.bbox[3] + y_margin,
+        )
+
+    @functools.cached_property
+    def mesh_width(self) -> int:
+        return self.width + 2 * self.margin_px
+
+    @functools.cached_property
+    def mesh_height(self) -> int:
+        return self.height + 2 * self.margin_px
 
     def __init__(
         self,
@@ -404,15 +439,13 @@ class GetMap:
         filter_start = time.time()
         filter_success = False
         try:
-            # Grab a buffer around the bbox to ensure we have enough data to render
-            x_buffer = (
-                abs(max(self.bbox[0], self.bbox[2]) - min(self.bbox[0], self.bbox[2]))
-                * 0.15
-            )
-            y_buffer = (
-                abs(max(self.bbox[1], self.bbox[3]) - min(self.bbox[1], self.bbox[3]))
-                * 0.15
-            )
+            # Grab a buffer around the bbox to ensure we have enough data to render.
+            # Use at least the margin fraction so margin-cell data is always fetched.
+            x_span = abs(self.bbox[2] - self.bbox[0])
+            y_span = abs(self.bbox[3] - self.bbox[1])
+            buffer_fraction = max(0.15, (self.margin_px / self.width) if self.width else 0)
+            x_buffer = x_span * buffer_fraction
+            y_buffer = y_span * buffer_fraction
             bbox = [
                 self.bbox[0] - x_buffer,
                 self.bbox[1] - y_buffer,
@@ -493,7 +526,7 @@ class GetMap:
 
         start_mesh = time.time()
         cell_center_indices = (
-            get_cell_center_indices(das, self.bbox, self.width, self.height, self.styles.density)
+            get_cell_center_indices(das, self.mesh_bbox, self.mesh_width, self.mesh_height, self.styles.density)
             if self.styles.type == "vector" and self.styles.use_cell_centers
             else None
         )
@@ -540,10 +573,10 @@ class GetMap:
                 )
 
         cvs = dsh.Canvas(
-            plot_height=self.height,
-            plot_width=self.width,
-            x_range=(self.bbox[0], self.bbox[2]),
-            y_range=(self.bbox[1], self.bbox[3]),
+            plot_height=self.mesh_height,
+            plot_width=self.mesh_width,
+            x_range=(self.mesh_bbox[0], self.mesh_bbox[2]),
+            y_range=(self.mesh_bbox[1], self.mesh_bbox[3]),
         )
 
         if ds.gridded.render_method == RenderMethod.Raster:
@@ -598,6 +631,7 @@ class GetMap:
             return visualize_vectors(
                 meshes,
                 cell_center_indices=cell_center_indices if use_cell_centers else None,
+                margin_px=self.margin_px,
                 **style_kwargs,
             )
 
